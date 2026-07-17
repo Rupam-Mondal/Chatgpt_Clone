@@ -1,9 +1,10 @@
 import { loadChatMessages, saveChatMessages } from "@/features/ai/actions/chat-store";
+import { webSearchTool } from "@/features/ai/tools/web-search";
 import { getChatModel } from "@/features/ai/utils/model";
 import { requireUser } from "@/features/auth/action/require-user";
 import { prisma } from "@/lib/db";
 import { auth } from "@clerk/nextjs/server";
-import { convertToModelMessages, createIdGenerator, createUIMessageStream, createUIMessageStreamResponse, streamText, toUIMessageStream, type UIMessage } from "ai";
+import { convertToModelMessages, createIdGenerator, createUIMessageStreamResponse, stepCountIs, streamText, toUIMessageStream, type UIMessage } from "ai";
 /**
  * POST /api/chat — Streams an AI assistant reply for a conversation.
  *
@@ -35,35 +36,40 @@ export async function POST(req: Request) {
     const previousMessages = await loadChatMessages(id);
 
     const alreadySaved = previousMessages.some(
-        (storedMessage)=>storedMessage.id === message.id
+        (storedMessage) => storedMessage.id === message.id
     )
 
     const messages = alreadySaved ? previousMessages : [...previousMessages, message];
 
-    if(!alreadySaved){
+    if (!alreadySaved) {
         await saveChatMessages(id, [message]);
     }
 
-    const result =  streamText({
+    const result = streamText({
         model: getChatModel(conversation.model),
         system: conversation.systemPrompt ?? "You are ChaiGpt , a helpful assistant",
         messages: await convertToModelMessages(messages),
+        tools: {
+            webSearch: webSearchTool,
+        },
+        // One step runs the search; the next lets the model answer using its results.
+        stopWhen: stepCountIs(2),
     });
 
     result.consumeStream();
 
     return createUIMessageStreamResponse({
-        stream:toUIMessageStream({
-           stream:result.stream,
-           originalMessages:messages,
-           generateMessageId:createIdGenerator({prefix:"msg" , size:16}),
-           onEnd:async({messages:finalMessages})=>{
-            try {
-                await saveChatMessages(id , finalMessages , {updateTitle:false})
-            } catch (error) {
-                console.error(error);
+        stream: toUIMessageStream({
+            stream: result.stream,
+            originalMessages: messages,
+            generateMessageId: createIdGenerator({ prefix: "msg", size: 16 }),
+            onEnd: async ({ messages: finalMessages }) => {
+                try {
+                    await saveChatMessages(id, finalMessages, { updateTitle: false })
+                } catch (error) {
+                    console.error(error);
+                }
             }
-           }
         })
     })
 
